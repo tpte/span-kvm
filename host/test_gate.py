@@ -1,6 +1,7 @@
 import unittest
 
 from gate import decide
+from keys import linux_code
 
 
 class DecideTest(unittest.TestCase):
@@ -13,6 +14,9 @@ class DecideTest(unittest.TestCase):
         effect, message = decide("remote", "move")
         self.assertEqual(effect, "drop")
         self.assertEqual(message, "move")
+
+    def test_letter_a_reaches_linux(self):
+        self.assertEqual(linux_code(0), 30)
 
     def test_local_move_is_not_forwarded(self):
         effect, message = decide("local", "move")

@@ -46,40 +46,59 @@ def cursor(env):
     return int(x), int(y)
 
 
-EV_SYN, EV_KEY, EV_REL = 0, 1, 2
-SYN_REPORT, REL_X, REL_Y = 0, 0, 1
-BTN = {"left": 0x110, "right": 0x111}
-UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_RELBIT = 0x40045564, 0x40045565, 0x40045566
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+SYN_REPORT, ABS_X, ABS_Y = 0, 0, 1
+BTN = {"left": 0x110, "right": 0x111, "middle": 0x112}
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT = 0x40045564, 0x40045565, 0x40045567
 UI_DEV_SETUP, UI_DEV_CREATE = 0x405C5503, 0x5501
+UI_ABS_SETUP = 0x401C5504
 
 
 class VirtualPointer:
+    """Absolute pointer. Relative reports get libinput acceleration and drift."""
+
     def __init__(self):
         self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
-        for bit, codes in (
-            (UI_SET_EVBIT, (EV_KEY, EV_REL)),
-            (UI_SET_KEYBIT, BTN.values()),
-            (UI_SET_RELBIT, (REL_X, REL_Y)),
-        ):
-            for code in codes:
-                fcntl.ioctl(self.fd, bit, code)
+        self.held = set()
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_ABS)
+        for code in list(BTN.values()) + list(range(1, 249)):
+            try:
+                fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
+            except OSError:
+                pass
+        fcntl.ioctl(self.fd, UI_SET_ABSBIT, ABS_X)
+        fcntl.ioctl(self.fd, UI_SET_ABSBIT, ABS_Y)
+        fcntl.ioctl(self.fd, UI_ABS_SETUP, struct.pack("HH6i", ABS_X, 0, 0, 0, 3199, 0, 0, 0))
+        fcntl.ioctl(self.fd, UI_ABS_SETUP, struct.pack("HH6i", ABS_Y, 0, 0, 0, 1079, 0, 0, 0))
         setup = struct.pack("HHHH80sI", 3, 0x1234, 0x5678, 1, b"span-kvm", 0)
         fcntl.ioctl(self.fd, UI_DEV_SETUP, setup)
         fcntl.ioctl(self.fd, UI_DEV_CREATE)
 
     def emit(self, typ, code, value):
-        os.write(self.fd, struct.pack("QQHHi", 0, 0, typ, code, value))
+        os.write(self.fd, struct.pack("QQHHi", 0, 0, typ, code, int(value)))
 
-    def move(self, dx, dy):
-        if dx:
-            self.emit(EV_REL, REL_X, int(dx))
-        if dy:
-            self.emit(EV_REL, REL_Y, int(dy))
+    def place(self, x, y):
+        self.emit(EV_ABS, ABS_X, max(0, min(3199, x)))
+        self.emit(EV_ABS, ABS_Y, max(0, min(1079, y)))
         self.emit(EV_SYN, SYN_REPORT, 0)
 
     def button(self, name, down):
         self.emit(EV_KEY, BTN[name], 1 if down else 0)
         self.emit(EV_SYN, SYN_REPORT, 0)
+
+    def key(self, code, down):
+        code = int(code)
+        self.emit(EV_KEY, code, 1 if down else 0)
+        self.emit(EV_SYN, SYN_REPORT, 0)
+        if down:
+            self.held.add(code)
+        else:
+            self.held.discard(code)
+
+    def release_keys(self):
+        for code in list(self.held):
+            self.key(code, False)
 
 
 def handle(conn, env, pointer):
@@ -102,13 +121,16 @@ def handle(conn, env, pointer):
                 back_x = int(msg["back_x"])
                 screen_id = msg["screen"]
                 pos = [int(msg["x"]), int(msg["y"])]
-                hypr(env, "hl.dsp.cursor.move({ x = %d, y = %d })" % (pos[0], pos[1]))
+                if pointer is not None:
+                    pointer.place(pos[0], pos[1])
+                else:
+                    hypr(env, "hl.dsp.cursor.move({ x = %d, y = %d })" % (pos[0], pos[1]))
                 conn.sendall(b'{"t":"ack"}\n')
             elif kind == "move" and pos is not None:
                 pos[0] += int(msg["dx"])
                 pos[1] += int(msg["dy"])
                 if pointer is not None:
-                    pointer.move(msg["dx"], msg["dy"])
+                    pointer.place(pos[0], pos[1])
                 else:
                     hypr(
                         env,
@@ -116,22 +138,23 @@ def handle(conn, env, pointer):
                     )
                 crossed = pos[0] >= back_x if direction == "ge" else pos[0] <= back_x
                 if crossed:
-                    try:
-                        _, hypr_y = cursor(env)
-                    except (OSError, subprocess.CalledProcessError, ValueError):
-                        hypr_y = pos[1]
                     print("back", screen_id, pos[0], flush=True)
                     conn.sendall(
                         (
                             '{"t":"back","screen":"%s","hypr_y":%d}\n'
-                            % (screen_id, hypr_y)
+                            % (screen_id, pos[1])
                         ).encode()
                     )
                     pos = None
             elif kind == "button" and pointer is not None:
-                print("button", msg["btn"], msg["down"], flush=True)
-                pointer.button(msg["btn"], msg["down"])
+                pointer.button(msg["btn"], bool(msg["down"]))
+            elif kind == "key" and pointer is not None:
+                pointer.key(msg["code"], bool(msg["down"]))
+            elif kind == "upall" and pointer is not None:
+                pointer.release_keys()
             elif kind == "leave":
+                if pointer is not None:
+                    pointer.release_keys()
                 return
 
 

@@ -16,6 +16,7 @@ import time
 import Quartz
 
 from gate import decide
+from keys import linux_code
 from layout import enter_fields, load, place_on_mac
 
 sys.stdout = open("/tmp/span-mac.log", "a", buffering=1)
@@ -33,6 +34,7 @@ sock = None
 waiting_since = 0.0
 pin = None
 last_edge = None
+held_flags = 0
 
 
 def send(msg):
@@ -123,11 +125,13 @@ def home_point(edge):
 
 def settle(reason, point):
     """Return the pointer to the Mac without dropping the MSI socket."""
-    global phase, pin, quiet_until
+    global phase, pin, quiet_until, held_flags
     print("release:", reason, point, flush=True)
     phase = "local"
     pin = None
     quiet_until = time.time() + 0.4
+    held_flags = 0
+    send({"t": "upall"})
     show()
     Quartz.CGWarpMouseCursorPosition(point)
 
@@ -168,6 +172,25 @@ def crossed(event):
     if x + dx >= xmax:
         return "right"
     return None
+
+
+def flag_changes(event):
+    global held_flags
+    flags = Quartz.CGEventGetFlags(event)
+    pairs = (
+        (Quartz.kCGEventFlagMaskControl, 29),
+        (Quartz.kCGEventFlagMaskShift, 42),
+        (Quartz.kCGEventFlagMaskAlternate, 56),
+        (Quartz.kCGEventFlagMaskCommand, 125),
+    )
+    changes = []
+    for bit, code in pairs:
+        now = bool(flags & bit)
+        was = bool(held_flags & bit)
+        if now != was:
+            changes.append((code, now))
+    held_flags = flags
+    return changes
 
 
 def mods_down(event):
@@ -215,16 +238,20 @@ def kind_of(etype):
         Quartz.kCGEventRightMouseDragged,
     ):
         return "move"
-    if etype in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown):
-        return "down"
-    if etype in (Quartz.kCGEventLeftMouseUp, Quartz.kCGEventRightMouseUp):
+    if etype in (Quartz.kCGEventLeftMouseUp, Quartz.kCGEventRightMouseUp, Quartz.kCGEventOtherMouseUp):
         return "up"
+    if etype in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown, Quartz.kCGEventOtherMouseDown):
+        return "down"
+    if etype in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+        return "key"
     return "other"
 
 
-def button_of(etype):
+def button_of(etype, event):
     if etype in (Quartz.kCGEventRightMouseDown, Quartz.kCGEventRightMouseUp):
         return "right"
+    if etype in (Quartz.kCGEventOtherMouseDown, Quartz.kCGEventOtherMouseUp):
+        return "middle"
     return "left"
 
 
@@ -236,10 +263,30 @@ def callback(proxy, etype, event, refcon):
         return event
     if mods_down(event):
         with lock:
-            if phase != "local":
+            remote = phase != "local"
+            if remote:
+                send({"t": "upall"})
                 release("chord")
+        return None if remote else event
+    if etype == Quartz.kCGEventFlagsChanged:
+        changes = flag_changes(event)
+        with lock:
+            if phase == "remote":
+                for code, down in changes:
+                    send({"t": "key", "code": code, "down": down})
+                return None
         return event
     kind = kind_of(etype)
+    if kind == "key":
+        with lock:
+            state = phase
+        if state != "remote":
+            return None if state == "waiting" else event
+        mac_code = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+        code = linux_code(mac_code)
+        if code is not None:
+            send({"t": "key", "code": code, "down": etype == Quartz.kCGEventKeyDown})
+        return None
     if kind == "other":
         return event
     with lock:
@@ -262,10 +309,8 @@ def callback(proxy, etype, event, refcon):
             if not send({"t": "move", "dx": dx, "dy": dy}):
                 release("send failed")
         elif message in ("down", "up"):
-            if not send({"t": "button", "btn": button_of(etype), "down": message == "down"}):
+            if not send({"t": "button", "btn": button_of(etype, event), "down": message == "down"}):
                 release("send failed")
-        if pin is not None:
-            Quartz.CGWarpMouseCursorPosition(pin)
         return None
 
 
@@ -315,6 +360,10 @@ def main():
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseUp)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
         | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
     )
     tap = Quartz.CGEventTapCreate(
