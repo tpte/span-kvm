@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>span 螢幕排列</title>
+<style>
+  body { margin: 0; font-family: sans-serif; background: #1c1b22; color: #f4f1ea; }
+  header { padding: 20px 24px 8px; }
+  p { margin: 4px 0 0; color: #b7b1a6; }
+  #desk { position: relative; height: 70vh; margin: 16px; background: #2a2830; border-radius: 16px; overflow: hidden; }
+  .screen { position: absolute; min-width: 120px; min-height: 80px; border-radius: 12px; display: flex; align-items: flex-end; padding: 12px; box-sizing: border-box; cursor: grab; user-select: none; }
+  .screen.mac { background: #d7e2ff; color: #1c2438; }
+  .screen.msi { background: #f0d7b4; color: #3a2a16; }
+  button { margin: 0 24px 24px; padding: 10px 16px; border: 0; border-radius: 10px; background: #f4f1ea; color: #1c1b22; font-size: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>把螢幕拖到你桌上的位置</h1>
+  <p>靠在一起的邊，游標就會從那一側走過去。不用填位址。</p>
+</header>
+<div id="desk"></div>
+<button id="save" type="button">儲存排列</button>
+<script>
+const desk = document.querySelector("#desk");
+let screens = [];
+let drag = null;
+
+function draw() {
+  desk.innerHTML = "";
+  const minX = Math.min(...screens.map(s => s.x));
+  const minY = Math.min(...screens.map(s => s.y));
+  for (const screen of screens) {
+    const node = document.createElement("div");
+    node.className = "screen " + screen.device;
+    node.textContent = screen.name;
+    node.style.left = (screen.x - minX + 24) + "px";
+    node.style.top = (screen.y - minY + 24) + "px";
+    node.style.width = Math.max(140, screen.w / 8) + "px";
+    node.style.height = Math.max(90, screen.h / 8) + "px";
+    node.onpointerdown = (event) => {
+      drag = { screen, dx: event.clientX, dy: event.clientY, x: screen.x, y: screen.y };
+      node.setPointerCapture(event.pointerId);
+    };
+    node.onpointermove = (event) => {
+      if (!drag || drag.screen !== screen) return;
+      screen.x = drag.x + (event.clientX - drag.dx) * 8;
+      screen.y = drag.y + (event.clientY - drag.dy) * 8;
+      snap(screen);
+      const minX = Math.min(...screens.map(s => s.x));
+      const minY = Math.min(...screens.map(s => s.y));
+      node.style.left = (screen.x - minX + 24) + "px";
+      node.style.top = (screen.y - minY + 24) + "px";
+    };
+    node.onpointerup = () => { drag = null; };
+    desk.appendChild(node);
+  }
+}
+
+function snap(screen) {
+  for (const other of screens) {
+    if (other === screen) continue;
+    if (Math.abs(screen.x - (other.x + other.w)) < 80) screen.x = other.x + other.w;
+    if (Math.abs((screen.x + screen.w) - other.x) < 80) screen.x = other.x - screen.w;
+    if (Math.abs(screen.y - other.y) < 80) screen.y = other.y;
+  }
+}
+
+fetch("/layout").then(r => r.json()).then(data => { screens = data.screens; draw(); });
+document.querySelector("#save").onclick = () => {
+  fetch("/layout", { method: "POST", body: JSON.stringify({ screens }) });
+};
+</script>
+</body>
+</html>

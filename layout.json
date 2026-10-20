@@ -1,0 +1,39 @@
+{
+  "screens": [
+    {
+      "id": "msi-main",
+      "device": "msi",
+      "name": "MSI 主螢幕",
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 720,
+      "hypr_x": 0,
+      "hypr_y": 0,
+      "hypr_w": 1280,
+      "hypr_h": 720
+    },
+    {
+      "id": "mac",
+      "device": "mac",
+      "name": "Mac",
+      "x": 1280,
+      "y": 0,
+      "w": 1440,
+      "h": 900
+    },
+    {
+      "id": "msi-ext",
+      "device": "msi",
+      "name": "MSI 外接",
+      "x": 2720,
+      "y": 0,
+      "w": 1920,
+      "h": 1080,
+      "hypr_x": 1280,
+      "hypr_y": 0,
+      "hypr_w": 1920,
+      "hypr_h": 1080
+    }
+  ]
+}

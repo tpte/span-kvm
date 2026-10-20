@@ -82,15 +82,6 @@ class VirtualPointer:
         self.emit(EV_SYN, SYN_REPORT, 0)
 
 
-def returning(edge, x):
-    # Laptop occupies x 0..1280. BenQ starts at 1280. The Mac sits in that seam.
-    if edge == "left":
-        return x >= 1276
-    if edge == "right":
-        return x <= 1284
-    return False
-
-
 def handle(conn, env, pointer):
     buf = b""
     edge = None
@@ -107,8 +98,10 @@ def handle(conn, env, pointer):
             msg = json.loads(line)
             kind = msg.get("t")
             if kind == "enter":
-                edge = msg["edge"]
-                pos = list(LANDING[edge])
+                direction = msg["dir"]
+                back_x = int(msg["back_x"])
+                screen_id = msg["screen"]
+                pos = [int(msg["x"]), int(msg["y"])]
                 hypr(env, "hl.dsp.cursor.move({ x = %d, y = %d })" % (pos[0], pos[1]))
                 conn.sendall(b'{"t":"ack"}\n')
             elif kind == "move" and pos is not None:
@@ -121,12 +114,20 @@ def handle(conn, env, pointer):
                         env,
                         "hl.dsp.cursor.move({ x = %d, y = %d })" % (pos[0], pos[1]),
                     )
-                if returning(edge, pos[0]):
-                    print("back", edge, pos[0], flush=True)
+                crossed = pos[0] >= back_x if direction == "ge" else pos[0] <= back_x
+                if crossed:
+                    try:
+                        _, hypr_y = cursor(env)
+                    except (OSError, subprocess.CalledProcessError, ValueError):
+                        hypr_y = pos[1]
+                    print("back", screen_id, pos[0], flush=True)
                     conn.sendall(
-                        ('{"t":"back","edge":"%s"}\n' % edge).encode()
+                        (
+                            '{"t":"back","screen":"%s","hypr_y":%d}\n'
+                            % (screen_id, hypr_y)
+                        ).encode()
                     )
-                    return
+                    pos = None
             elif kind == "button" and pointer is not None:
                 print("button", msg["btn"], msg["down"], flush=True)
                 pointer.button(msg["btn"], msg["down"])

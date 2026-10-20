@@ -7,6 +7,7 @@ has Accessibility:
 /Library/Frameworks/Python.framework/Versions/3.9/bin/python3.9
 """
 import json
+import os
 import socket
 import sys
 import threading
@@ -15,6 +16,7 @@ import time
 import Quartz
 
 from gate import decide
+from layout import enter_fields, load, place_on_mac
 
 sys.stdout = open("/tmp/span-mac.log", "a", buffering=1)
 sys.stderr = sys.stdout
@@ -22,6 +24,8 @@ sys.stderr = sys.stdout
 MSI = ("172.20.10.4", 42421)
 ACK_S = 1.0
 CENTER = (720, 450)
+LAYOUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "layout.json")
+quiet_until = 0.0
 
 phase = "local"  # local | waiting | remote
 lock = threading.Lock()
@@ -94,7 +98,9 @@ def reader():
                         print("acked, mac cursor pinned", pin, flush=True)
             elif msg.get("t") == "back":
                 with lock:
-                    release("slide back", msg.get("edge"))
+                    screens = load(LAYOUT)
+                    point = place_on_mac(screens, msg["screen"], msg["hypr_y"])
+                    settle("slide back", point)
 
 
 def edge_point(edge):
@@ -115,11 +121,20 @@ def home_point(edge):
     return CENTER
 
 
-def release(reason, edge=None):
-    global phase, sock, pin
-    print("release:", reason, edge, flush=True)
+def settle(reason, point):
+    """Return the pointer to the Mac without dropping the MSI socket."""
+    global phase, pin, quiet_until
+    print("release:", reason, point, flush=True)
     phase = "local"
     pin = None
+    quiet_until = time.time() + 0.4
+    show()
+    Quartz.CGWarpMouseCursorPosition(point)
+
+
+def release(reason, edge=None):
+    global sock
+    settle(reason, home_point(edge))
     send({"t": "leave"})
     if sock is not None:
         try:
@@ -127,8 +142,6 @@ def release(reason, edge=None):
         except OSError:
             pass
         sock = None
-    show()
-    Quartz.CGWarpMouseCursorPosition(home_point(edge))
 
 
 def hide():
@@ -179,7 +192,8 @@ def begin(edge):
         waiting_since = time.time()
         Quartz.CGWarpMouseCursorPosition(pin)
     print("waiting", edge, flush=True)
-    if not connect() or not send({"t": "enter", "edge": edge}):
+    screens = load(LAYOUT)
+    if not connect() or not send(enter_fields(screens, edge)):
         with lock:
             release("connect failed")
         return
@@ -233,6 +247,8 @@ def callback(proxy, etype, event, refcon):
         if state == "waiting" and time.time() - waiting_since > ACK_S:
             release("no ack")
             state = "local"
+        if time.time() < quiet_until:
+            return event
         edge = crossed(event) if state == "local" and kind == "move" else None
         if edge and state == "local":
             threading.Thread(target=begin, args=(edge,), daemon=True).start()
@@ -253,8 +269,44 @@ def callback(proxy, etype, event, refcon):
         return None
 
 
+def serve_desk():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desk.html")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/layout"):
+                body = open(LAYOUT, "rb").read()
+                kind = "application/json"
+            else:
+                body = open(html_path, "rb").read()
+                kind = "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            size = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(size)
+            json.loads(body)
+            with open(LAYOUT, "wb") as handle:
+                handle.write(body)
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, fmt, *args):
+            return
+
+    ThreadingHTTPServer(("127.0.0.1", 42422), Handler).serve_forever()
+
+
 def main():
     global tap
+    threading.Thread(target=serve_desk, daemon=True).start()
+    print("desk ui http://127.0.0.1:42422", flush=True)
     mask = (
         Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDragged)
