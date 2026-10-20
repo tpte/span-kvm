@@ -1,0 +1,17 @@
+[Unit]
+Description=span-kvm MSI host
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DISPLAY=:0
+WorkingDirectory=%h/.local/share/span-kvm
+ExecStart=/usr/bin/sudo -n /usr/bin/python3 %h/.local/share/span-kvm/msi.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

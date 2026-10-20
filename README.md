@@ -23,16 +23,15 @@ span-kvm keeps the local cursor until the peer has acknowledged the enter, and a
 
 ## Run
 
-MSI, already allowed on TCP `42421` from `172.20.10.0/28`:
+One-time install (Mac and MSI). No manual `python3 host/...` after this.
 
 ```bash
-python3 host/msi.py
+./scripts/install-mac.sh
+./scripts/sync-msi.sh
 ```
 
-Mac, from Terminal so Accessibility applies to that Python:
+Mac installs `~/Library/LaunchAgents/com.tpte.span-kvm.mac.plist` and starts span-mac with the Python 3.9 binary that already has Accessibility. MSI installs `systemd --user` unit `span-kvm-msi.service` under `~/.local/share/span-kvm/`.
 
-```bash
-/Library/Frameworks/Python.framework/Versions/3.9/bin/python3.9 host/mac.py
-```
+MSI needs TCP `42421` from the Mac subnet (for example `172.20.10.0/28`).
 
 The cursor stays on the Mac until MSI sends `ack`. If the connect fails, it is warped back to the center and left visible. `Ctrl+Shift+Command+Option` returns from the MSI. Rust `cargo run` still only prints the same rule; the live hosts are `host/mac.py` and `host/msi.py`.
