@@ -1,0 +1,10 @@
+[package]
+name = "span-kvm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pointer bridge that does not trap the local cursor"
+
+[[bin]]
+name = "span-kvm"
+path = "src/main.rs"
