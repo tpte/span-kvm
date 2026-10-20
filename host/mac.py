@@ -16,7 +16,7 @@ import time
 import Quartz
 
 from gate import decide
-from keys import linux_code
+from keys import linux_code, modifier_key_messages
 from layout import enter_fields, load, place_on_mac
 
 sys.stdout = open("/tmp/span-mac.log", "a", buffering=1)
@@ -97,12 +97,14 @@ def reader():
                         pin = edge_point(last_edge or "right")
                         Quartz.CGWarpMouseCursorPosition(pin)
                         hide()
+                        for payload in modifier_key_messages(held_flags):
+                            send(payload)
                         print("acked, mac cursor pinned", pin, flush=True)
             elif msg.get("t") == "back":
                 with lock:
                     screens = load(LAYOUT)
                     point = place_on_mac(screens, msg["screen"], msg["hypr_y"])
-                    settle("slide back", point)
+                    settle("slide back", point, quiet=0.12, clear_mod_flags=False)
 
 
 def edge_point(edge):
@@ -123,14 +125,15 @@ def home_point(edge):
     return CENTER
 
 
-def settle(reason, point):
+def settle(reason, point, quiet=0.35, clear_mod_flags=True):
     """Return the pointer to the Mac without dropping the MSI socket."""
     global phase, pin, quiet_until, held_flags
     print("release:", reason, point, flush=True)
     phase = "local"
     pin = None
-    quiet_until = time.time() + 0.4
-    held_flags = 0
+    quiet_until = time.time() + quiet
+    if clear_mod_flags:
+        held_flags = 0
     send({"t": "upall"})
     show()
     Quartz.CGWarpMouseCursorPosition(point)
@@ -244,6 +247,8 @@ def kind_of(etype):
         return "down"
     if etype in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
         return "key"
+    if etype == Quartz.kCGEventScrollWheel:
+        return "scroll"
     return "other"
 
 
@@ -311,6 +316,23 @@ def callback(proxy, etype, event, refcon):
         elif message in ("down", "up"):
             if not send({"t": "button", "btn": button_of(etype, event), "down": message == "down"}):
                 release("send failed")
+        elif message == "scroll":
+            dy = Quartz.CGEventGetIntegerValueField(
+                event, Quartz.kCGScrollWheelEventDeltaAxis1
+            )
+            dx = Quartz.CGEventGetIntegerValueField(
+                event, Quartz.kCGScrollWheelEventDeltaAxis2
+            )
+            horizontal = bool(dx) and not dy
+            if not send(
+                {
+                    "t": "scroll",
+                    "dx": int(dx),
+                    "dy": int(dy),
+                    "horizontal": horizontal,
+                }
+            ):
+                release("send failed")
         return None
 
 
@@ -365,6 +387,7 @@ def main():
         | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
         | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventScrollWheel)
     )
     tap = Quartz.CGEventTapCreate(
         Quartz.kCGSessionEventTap,

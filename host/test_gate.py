@@ -23,6 +23,11 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(effect, "pass")
         self.assertIsNone(message)
 
+    def test_remote_scroll_is_forwarded(self):
+        effect, message = decide("remote", "scroll")
+        self.assertEqual(effect, "drop")
+        self.assertEqual(message, "scroll")
+
 
 if __name__ == "__main__":
     unittest.main()

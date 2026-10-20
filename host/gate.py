@@ -15,6 +15,10 @@ def decide(phase, kind):
         return "drop", "move"
     if kind in ("down", "up") and phase == "remote":
         return "drop", kind
+    if kind == "scroll" and phase == "remote":
+        return "drop", "scroll"
     if kind in ("down", "up") and phase == "waiting":
+        return "drop", None
+    if kind == "scroll" and phase == "waiting":
         return "drop", None
     return "pass", None

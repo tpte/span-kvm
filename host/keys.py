@@ -21,6 +21,26 @@ MODIFIER_BITS = (
     ("meta", 125),
 )
 
+FLAG_SHIFT = 1 << 17
+FLAG_CONTROL = 1 << 18
+FLAG_ALT = 1 << 19
+FLAG_COMMAND = 1 << 20
+
+FLAG_MODIFIER_LINUX = (
+    (FLAG_CONTROL, 29),
+    (FLAG_SHIFT, 42),
+    (FLAG_ALT, 56),
+    (FLAG_COMMAND, 125),
+)
+
 
 def linux_code(mac_code):
     return MAC_TO_LINUX.get(mac_code)
+
+
+def active_modifier_linux_codes(flags):
+    return [code for mask, code in FLAG_MODIFIER_LINUX if flags & mask]
+
+
+def modifier_key_messages(flags, down=True):
+    return [{"t": "key", "code": code, "down": down} for code in active_modifier_linux_codes(flags)]

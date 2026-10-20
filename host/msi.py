@@ -46,10 +46,16 @@ def cursor(env):
     return int(x), int(y)
 
 
-EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+EV_SYN, EV_KEY, EV_ABS, EV_REL = 0, 1, 3, 2
 SYN_REPORT, ABS_X, ABS_Y = 0, 0, 1
+REL_WHEEL, REL_HWHEEL = 8, 6
 BTN = {"left": 0x110, "right": 0x111, "middle": 0x112}
-UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT = 0x40045564, 0x40045565, 0x40045567
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT, UI_SET_RELBIT = (
+    0x40045564,
+    0x40045565,
+    0x40045567,
+    0x40045566,
+)
 UI_DEV_SETUP, UI_DEV_CREATE = 0x405C5503, 0x5501
 UI_ABS_SETUP = 0x401C5504
 
@@ -62,6 +68,9 @@ class VirtualPointer:
         self.held = set()
         fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
         fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_ABS)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_REL)
+        fcntl.ioctl(self.fd, UI_SET_RELBIT, REL_WHEEL)
+        fcntl.ioctl(self.fd, UI_SET_RELBIT, REL_HWHEEL)
         for code in list(BTN.values()) + list(range(1, 249)):
             try:
                 fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
@@ -100,11 +109,40 @@ class VirtualPointer:
         for code in list(self.held):
             self.key(code, False)
 
+    def scroll(self, dx, dy, horizontal):
+        if horizontal and dx:
+            self.emit(EV_REL, REL_HWHEEL, dx)
+        elif dy:
+            self.emit(EV_REL, REL_WHEEL, dy)
+        self.emit(EV_SYN, SYN_REPORT, 0)
+
+
+class HyprSink:
+    def __init__(self, env):
+        self.env = env
+
+    def place(self, x, y):
+        hypr(self.env, "hl.dsp.cursor.move({ x = %d, y = %d })" % (x, y))
+
+    def button(self, name, down):
+        pass
+
+    def key(self, code, down):
+        pass
+
+    def scroll(self, dx, dy, horizontal):
+        pass
+
+    def release_keys(self):
+        pass
+
 
 def handle(conn, env, pointer):
+    from session import RemoteSession
+
     buf = b""
-    edge = None
-    pos = None
+    sink = pointer if pointer is not None else HyprSink(env)
+    session = RemoteSession(sink)
     while True:
         chunk = conn.recv(4096)
         if not chunk:
@@ -115,47 +153,18 @@ def handle(conn, env, pointer):
             if not line:
                 continue
             msg = json.loads(line)
-            kind = msg.get("t")
-            if kind == "enter":
-                direction = msg["dir"]
-                back_x = int(msg["back_x"])
-                screen_id = msg["screen"]
-                pos = [int(msg["x"]), int(msg["y"])]
-                if pointer is not None:
-                    pointer.place(pos[0], pos[1])
-                else:
-                    hypr(env, "hl.dsp.cursor.move({ x = %d, y = %d })" % (pos[0], pos[1]))
-                conn.sendall(b'{"t":"ack"}\n')
-            elif kind == "move" and pos is not None:
-                pos[0] += int(msg["dx"])
-                pos[1] += int(msg["dy"])
-                if pointer is not None:
-                    pointer.place(pos[0], pos[1])
-                else:
-                    hypr(
-                        env,
-                        "hl.dsp.cursor.move({ x = %d, y = %d })" % (pos[0], pos[1]),
-                    )
-                crossed = pos[0] >= back_x if direction == "ge" else pos[0] <= back_x
-                if crossed:
-                    print("back", screen_id, pos[0], flush=True)
-                    conn.sendall(
-                        (
-                            '{"t":"back","screen":"%s","hypr_y":%d}\n'
-                            % (screen_id, pos[1])
-                        ).encode()
-                    )
-                    pos = None
-            elif kind == "button" and pointer is not None:
-                pointer.button(msg["btn"], bool(msg["down"]))
-            elif kind == "key" and pointer is not None:
-                pointer.key(msg["code"], bool(msg["down"]))
-            elif kind == "upall" and pointer is not None:
-                pointer.release_keys()
-            elif kind == "leave":
-                if pointer is not None:
-                    pointer.release_keys()
+            if msg.get("t") == "leave":
+                session.feed(msg)
                 return
+            for reply in session.feed(msg):
+                if reply.get("t") == "back":
+                    print(
+                        "back",
+                        reply["screen"],
+                        reply["hypr_y"],
+                        flush=True,
+                    )
+                conn.sendall((json.dumps(reply) + "\n").encode())
 
 
 def main():
