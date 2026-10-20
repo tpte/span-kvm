@@ -25,6 +25,8 @@ phase = "local"  # local | waiting | remote
 lock = threading.Lock()
 sock = None
 waiting_since = 0.0
+pin = None
+last_edge = None
 
 
 def send(msg):
@@ -84,14 +86,25 @@ def reader():
                 with lock:
                     if phase == "waiting":
                         phase = "remote"
+                        pin = edge_point(last_edge or "right")
+                        Quartz.CGWarpMouseCursorPosition(pin)
                         hide()
-                        print("acked, cursor hidden", flush=True)
+                        print("acked, mac cursor pinned", pin, flush=True)
+
+
+def edge_point(edge):
+    xmin, ymin, xmax, ymax = bounds()
+    y = (ymin + ymax) / 2
+    if edge == "left":
+        return (xmin + 1, y)
+    return (xmax - 1, y)
 
 
 def release(reason):
-    global phase, sock
+    global phase, sock, pin
     print("release:", reason, flush=True)
     phase = "local"
+    pin = None
     send({"t": "leave"})
     if sock is not None:
         try:
@@ -141,11 +154,12 @@ def mods_down(event):
 
 
 def begin(edge):
-    global phase, waiting_since
+    global phase, waiting_since, last_edge
     with lock:
         if phase != "local":
             return
         phase = "waiting"
+        last_edge = edge
         waiting_since = time.time()
     print("waiting", edge, flush=True)
     if not connect() or not send({"t": "enter", "edge": edge}):
@@ -174,7 +188,11 @@ def callback(proxy, etype, event, refcon):
             if phase != "local":
                 release("chord")
         return event
-    if etype != Quartz.kCGEventMouseMoved:
+    if etype not in (
+        Quartz.kCGEventMouseMoved,
+        Quartz.kCGEventLeftMouseDragged,
+        Quartz.kCGEventRightMouseDragged,
+    ):
         return event
     with lock:
         state = phase
@@ -191,15 +209,22 @@ def callback(proxy, etype, event, refcon):
             if not send({"t": "move", "dx": dx, "dy": dy}):
                 release("send failed")
             else:
+                # Drop the local move. Warping back covers the cases where
+                # the window server still applies the event.
                 Quartz.CGEventSetType(event, Quartz.kCGEventNull)
+                if pin is not None:
+                    Quartz.CGWarpMouseCursorPosition(pin)
             return event
     return event
 
 
 def main():
     global tap
-    mask = Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved) | Quartz.CGEventMaskBit(
-        Quartz.kCGEventFlagsChanged
+    mask = (
+        Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDragged)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDragged)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
     )
     tap = Quartz.CGEventTapCreate(
         Quartz.kCGSessionEventTap,
