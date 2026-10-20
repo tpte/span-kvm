@@ -7,6 +7,7 @@ has Accessibility:
 /Library/Frameworks/Python.framework/Versions/3.9/bin/python3.9
 """
 import json
+import os
 import socket
 import sys
 import threading
@@ -14,12 +15,18 @@ import time
 
 import Quartz
 
+from gate import decide
+from keys import linux_code, modifier_key_messages
+from layout import enter_fields, load, place_on_mac
+
 sys.stdout = open("/tmp/span-mac.log", "a", buffering=1)
 sys.stderr = sys.stdout
 
 MSI = ("172.20.10.4", 42421)
 ACK_S = 1.0
 CENTER = (720, 450)
+LAYOUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "layout.json")
+quiet_until = 0.0
 
 phase = "local"  # local | waiting | remote
 lock = threading.Lock()
@@ -27,6 +34,7 @@ sock = None
 waiting_since = 0.0
 pin = None
 last_edge = None
+held_flags = 0
 
 
 def send(msg):
@@ -54,7 +62,7 @@ def connect():
 
 
 def reader():
-    global phase, sock
+    global phase, sock, pin
     buf = b""
     while True:
         with lock:
@@ -89,7 +97,14 @@ def reader():
                         pin = edge_point(last_edge or "right")
                         Quartz.CGWarpMouseCursorPosition(pin)
                         hide()
+                        for payload in modifier_key_messages(held_flags):
+                            send(payload)
                         print("acked, mac cursor pinned", pin, flush=True)
+            elif msg.get("t") == "back":
+                with lock:
+                    screens = load(LAYOUT)
+                    point = place_on_mac(screens, msg["screen"], msg["hypr_y"])
+                    settle("slide back", point, quiet=0.12, clear_mod_flags=False)
 
 
 def edge_point(edge):
@@ -100,11 +115,33 @@ def edge_point(edge):
     return (xmax - 1, y)
 
 
-def release(reason):
-    global phase, sock, pin
-    print("release:", reason, flush=True)
+def home_point(edge):
+    xmin, _, xmax, ymax = bounds()
+    y = ymax / 2
+    if edge == "left":
+        return (xmin + 36, y)
+    if edge == "right":
+        return (xmax - 36, y)
+    return CENTER
+
+
+def settle(reason, point, quiet=0.35, clear_mod_flags=True):
+    """Return the pointer to the Mac without dropping the MSI socket."""
+    global phase, pin, quiet_until, held_flags
+    print("release:", reason, point, flush=True)
     phase = "local"
     pin = None
+    quiet_until = time.time() + quiet
+    if clear_mod_flags:
+        held_flags = 0
+    send({"t": "upall"})
+    show()
+    Quartz.CGWarpMouseCursorPosition(point)
+
+
+def release(reason, edge=None):
+    global sock
+    settle(reason, home_point(edge))
     send({"t": "leave"})
     if sock is not None:
         try:
@@ -112,8 +149,6 @@ def release(reason):
         except OSError:
             pass
         sock = None
-    show()
-    Quartz.CGWarpMouseCursorPosition(CENTER)
 
 
 def hide():
@@ -122,7 +157,7 @@ def hide():
 
 def show():
     disp = Quartz.CGMainDisplayID()
-    for _ in range(8):
+    for _ in range(32):
         Quartz.CGDisplayShowCursor(disp)
 
 
@@ -142,6 +177,25 @@ def crossed(event):
     return None
 
 
+def flag_changes(event):
+    global held_flags
+    flags = Quartz.CGEventGetFlags(event)
+    pairs = (
+        (Quartz.kCGEventFlagMaskControl, 29),
+        (Quartz.kCGEventFlagMaskShift, 42),
+        (Quartz.kCGEventFlagMaskAlternate, 56),
+        (Quartz.kCGEventFlagMaskCommand, 125),
+    )
+    changes = []
+    for bit, code in pairs:
+        now = bool(flags & bit)
+        was = bool(held_flags & bit)
+        if now != was:
+            changes.append((code, now))
+    held_flags = flags
+    return changes
+
+
 def mods_down(event):
     flags = Quartz.CGEventGetFlags(event)
     need = (
@@ -154,15 +208,18 @@ def mods_down(event):
 
 
 def begin(edge):
-    global phase, waiting_since, last_edge
+    global phase, waiting_since, last_edge, pin
     with lock:
         if phase != "local":
             return
         phase = "waiting"
         last_edge = edge
+        pin = edge_point(edge)
         waiting_since = time.time()
+        Quartz.CGWarpMouseCursorPosition(pin)
     print("waiting", edge, flush=True)
-    if not connect() or not send({"t": "enter", "edge": edge}):
+    screens = load(LAYOUT)
+    if not connect() or not send(enter_fields(screens, edge)):
         with lock:
             release("connect failed")
         return
@@ -177,6 +234,32 @@ def begin(edge):
             release("no ack")
 
 
+def kind_of(etype):
+    if etype in (
+        Quartz.kCGEventMouseMoved,
+        Quartz.kCGEventLeftMouseDragged,
+        Quartz.kCGEventRightMouseDragged,
+    ):
+        return "move"
+    if etype in (Quartz.kCGEventLeftMouseUp, Quartz.kCGEventRightMouseUp, Quartz.kCGEventOtherMouseUp):
+        return "up"
+    if etype in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown, Quartz.kCGEventOtherMouseDown):
+        return "down"
+    if etype in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+        return "key"
+    if etype == Quartz.kCGEventScrollWheel:
+        return "scroll"
+    return "other"
+
+
+def button_of(etype, event):
+    if etype in (Quartz.kCGEventRightMouseDown, Quartz.kCGEventRightMouseUp):
+        return "right"
+    if etype in (Quartz.kCGEventOtherMouseDown, Quartz.kCGEventOtherMouseUp):
+        return "middle"
+    return "left"
+
+
 def callback(proxy, etype, event, refcon):
     global phase
     if etype == Quartz.kCGEventTapDisabledByTimeout:
@@ -185,46 +268,126 @@ def callback(proxy, etype, event, refcon):
         return event
     if mods_down(event):
         with lock:
-            if phase != "local":
+            remote = phase != "local"
+            if remote:
+                send({"t": "upall"})
                 release("chord")
+        return None if remote else event
+    if etype == Quartz.kCGEventFlagsChanged:
+        changes = flag_changes(event)
+        with lock:
+            if phase == "remote":
+                for code, down in changes:
+                    send({"t": "key", "code": code, "down": down})
+                return None
         return event
-    if etype not in (
-        Quartz.kCGEventMouseMoved,
-        Quartz.kCGEventLeftMouseDragged,
-        Quartz.kCGEventRightMouseDragged,
-    ):
+    kind = kind_of(etype)
+    if kind == "key":
+        with lock:
+            state = phase
+        if state != "remote":
+            return None if state == "waiting" else event
+        mac_code = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+        code = linux_code(mac_code)
+        if code is not None:
+            send({"t": "key", "code": code, "down": etype == Quartz.kCGEventKeyDown})
+        return None
+    if kind == "other":
         return event
     with lock:
         state = phase
         if state == "waiting" and time.time() - waiting_since > ACK_S:
             release("no ack")
             state = "local"
-        edge = crossed(event) if state == "local" else None
+        if time.time() < quiet_until:
+            return event
+        edge = crossed(event) if state == "local" and kind == "move" else None
         if edge and state == "local":
             threading.Thread(target=begin, args=(edge,), daemon=True).start()
+            return None
+        effect, message = decide(state, kind)
+        if effect == "pass":
             return event
-        if state == "remote":
+        if message == "move":
             dx = Quartz.CGEventGetDoubleValueField(event, Quartz.kCGMouseEventDeltaX)
             dy = Quartz.CGEventGetDoubleValueField(event, Quartz.kCGMouseEventDeltaY)
             if not send({"t": "move", "dx": dx, "dy": dy}):
                 release("send failed")
+        elif message in ("down", "up"):
+            if not send({"t": "button", "btn": button_of(etype, event), "down": message == "down"}):
+                release("send failed")
+        elif message == "scroll":
+            dy = Quartz.CGEventGetIntegerValueField(
+                event, Quartz.kCGScrollWheelEventDeltaAxis1
+            )
+            dx = Quartz.CGEventGetIntegerValueField(
+                event, Quartz.kCGScrollWheelEventDeltaAxis2
+            )
+            horizontal = bool(dx) and not dy
+            if not send(
+                {
+                    "t": "scroll",
+                    "dx": int(dx),
+                    "dy": int(dy),
+                    "horizontal": horizontal,
+                }
+            ):
+                release("send failed")
+        return None
+
+
+def serve_desk():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desk.html")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/layout"):
+                body = open(LAYOUT, "rb").read()
+                kind = "application/json"
             else:
-                # Drop the local move. Warping back covers the cases where
-                # the window server still applies the event.
-                Quartz.CGEventSetType(event, Quartz.kCGEventNull)
-                if pin is not None:
-                    Quartz.CGWarpMouseCursorPosition(pin)
-            return event
-    return event
+                body = open(html_path, "rb").read()
+                kind = "text/html; charset=utf-8"
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            size = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(size)
+            json.loads(body)
+            with open(LAYOUT, "wb") as handle:
+                handle.write(body)
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, fmt, *args):
+            return
+
+    ThreadingHTTPServer(("127.0.0.1", 42422), Handler).serve_forever()
 
 
 def main():
     global tap
+    threading.Thread(target=serve_desk, daemon=True).start()
+    print("desk ui http://127.0.0.1:42422", flush=True)
     mask = (
         Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDragged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDragged)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
         | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventScrollWheel)
     )
     tap = Quartz.CGEventTapCreate(
         Quartz.kCGSessionEventTap,

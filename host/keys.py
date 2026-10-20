@@ -1,0 +1,46 @@
+"""Mac virtual keycodes to Linux evdev codes. Unlisted keys are ignored."""
+
+MAC_TO_LINUX = {
+    0: 30, 1: 31, 2: 32, 3: 33, 4: 35, 5: 34, 6: 44, 7: 45, 8: 46, 9: 47,
+    11: 48, 12: 16, 13: 17, 14: 18, 15: 19, 16: 21, 17: 20,
+    18: 2, 19: 3, 20: 4, 21: 5, 22: 7, 23: 6, 24: 13, 25: 10, 26: 8, 27: 12,
+    28: 9, 29: 11, 30: 27, 31: 24, 32: 22, 33: 26, 34: 23, 35: 25, 36: 28,
+    37: 38, 38: 36, 39: 40, 40: 37, 41: 39, 42: 43, 43: 51, 44: 53, 45: 49,
+    46: 50, 47: 52, 48: 15, 49: 57, 51: 14, 53: 1,
+    55: 125, 56: 42, 57: 58, 58: 56, 59: 29, 60: 54, 61: 100, 62: 97,
+    123: 105, 124: 106, 125: 108, 126: 103,
+    115: 102, 119: 107, 116: 104, 121: 109, 117: 111,
+    122: 59, 120: 60, 99: 61, 118: 62, 96: 63, 97: 64, 98: 65, 100: 66,
+    101: 67, 109: 68, 103: 87, 111: 88,
+}
+
+MODIFIER_BITS = (
+    ("ctrl", 29),
+    ("shift", 42),
+    ("alt", 56),
+    ("meta", 125),
+)
+
+FLAG_SHIFT = 1 << 17
+FLAG_CONTROL = 1 << 18
+FLAG_ALT = 1 << 19
+FLAG_COMMAND = 1 << 20
+
+FLAG_MODIFIER_LINUX = (
+    (FLAG_CONTROL, 29),
+    (FLAG_SHIFT, 42),
+    (FLAG_ALT, 56),
+    (FLAG_COMMAND, 125),
+)
+
+
+def linux_code(mac_code):
+    return MAC_TO_LINUX.get(mac_code)
+
+
+def active_modifier_linux_codes(flags):
+    return [code for mask, code in FLAG_MODIFIER_LINUX if flags & mask]
+
+
+def modifier_key_messages(flags, down=True):
+    return [{"t": "key", "code": code, "down": down} for code in active_modifier_linux_codes(flags)]
