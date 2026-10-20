@@ -21,6 +21,18 @@ span-kvm keeps the local cursor until the peer has acknowledged the enter, and a
 | Left | MSI laptop (`eDP-2`), near its right side |
 | Right | BenQ (`HDMI-A-1`), near its left side |
 
-## Build
+## Run
 
-Rust toolchain is required. `cargo run -- doctor` prints the desk and the capture rule. The event tap and the Hyprland virtual pointer are not wired up yet.
+MSI, already allowed on TCP `42421` from `172.20.10.0/28`:
+
+```bash
+python3 host/msi.py
+```
+
+Mac, from Terminal so Accessibility applies to that Python:
+
+```bash
+/Library/Frameworks/Python.framework/Versions/3.9/bin/python3.9 host/mac.py
+```
+
+The cursor stays on the Mac until MSI sends `ack`. If the connect fails, it is warped back to the center and left visible. `Ctrl+Shift+Command+Option` returns from the MSI. Rust `cargo run` still only prints the same rule; the live hosts are `host/mac.py` and `host/msi.py`.
